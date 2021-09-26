@@ -17,7 +17,7 @@ import signal
 class nmapScanner():
     NUMBER_WORKERS = multiprocessing.cpu_count() * 2
     MAX_SCAN_TIME = 3600 # in seconds
-    subnets_target = ['192.168.0.0/24']
+    subnets_target = ['192.168.0.0/30']
     ips_target = []
     ips_to_scan = []
     results = None
@@ -27,7 +27,7 @@ class nmapScanner():
     item_key_error = 'ports_item_key_error'
     psk_identity = 'ports_psk_identity'
     psk_file = 'ports_psk_identity'
-    scans_status = None
+    scan_finished = False
 
     def __init__(self) -> None:
         self.results = dict()
@@ -44,6 +44,7 @@ class nmapScanner():
         monitor_thread.start()
         scan_tasks = self.split_work(self.NUMBER_WORKERS, self.ips_to_scan)
         print(self.send_workers(self.NUMBER_WORKERS, scan_tasks))
+        self.scan_finished = True
 
     def split_work(self, poolsize: int, ips_list: list) -> list:
         """Split scan into independent threads
@@ -100,7 +101,7 @@ class nmapScanner():
         """Periodically print the time that has elapsed since the start of a specific host scan.
         And kill nmap process if the scan is running too long.
         """
-        while(True):
+        while(self.scan_finished is False):
             time.sleep(120)
             scan_status_dict_copy = self.scans_status.copy() # to avoid race condition during iteration
             for k, v in scan_status_dict_copy.items():
@@ -134,12 +135,13 @@ class nmapScanner():
             self.scans_status[pid] = [time.time(), str(host)]
             nmap_output = nmap_proc.communicate()[0].decode('utf-8').rstrip()
             print("{0} scanned".format(host))
-            del self.scans_status[pid]
         except KeyboardInterrupt:
             print("Quitting scan!")
             return
         except:
             traceback.print_exc()
+        finally:
+            del self.scans_status[pid]
         if nmap_output is not None:
             status, results = self.parseResults(nmap_output, str(host))
             if status:
@@ -214,7 +216,7 @@ class nmapScanner():
             self.server_port, host_name, self.item_key_error, message, self.psk_identity, self.psk_file)
             subprocess.call(subprocess_command, shell=True)
         except:
-            print("Error during sending erro data")
+            print("Error during sending error data")
 
 if __name__ == "__main__":
     nmapScanner = nmapScanner()
