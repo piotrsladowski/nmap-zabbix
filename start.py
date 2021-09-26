@@ -1,5 +1,3 @@
-# https://docs.python.org/3/library/xml.etree.elementtree.html
-
 from asyncio import tasks
 import subprocess
 import xml.etree.ElementTree as ET
@@ -14,35 +12,36 @@ import os
 import sys
 import time
 import threading
-
 import signal
 
 class nmapScanner():
     NUMBER_WORKERS = multiprocessing.cpu_count() * 2
+    MAX_SCAN_TIME = 3600 # in seconds
     subnets_target = ['192.168.0.0/24']
     ips_target = []
     ips_to_scan = []
     results = None
-    nmap_command_base = 'nmap -sS -vv -Pn -T3 -p- -oX - '
-    #nmap_command_base = 'nmap -Pn -T5 -p- -oX - '
     server_ip = '135.125.107.36'
     server_port = '21055'
     item_key = 'ports_item_key'
+    item_key_error = 'ports_item_key_error'
     psk_identity = 'ports_psk_identity'
     psk_file = 'ports_psk_identity'
     scans_status = None
 
-    def __init__(self):
+    def __init__(self) -> None:
         self.results = dict()
         self.scans_status = dict()
         if os.geteuid() != 0: # change if another user has root rights
             print("Script must be run as root!")
             sys.exit(1)
 
-    def run(self):
+    def run(self) -> None:
+        """Start monitoring thread and multiprocessing scan.
+        """
         self.prepareTargets()
-        t = threading.Thread(target=self.print_scan_info)
-        t.start()
+        monitor_thread = threading.Thread(target=self.print_scan_info)
+        monitor_thread.start()
         scan_tasks = self.split_work(self.NUMBER_WORKERS, self.ips_to_scan)
         print(self.send_workers(self.NUMBER_WORKERS, scan_tasks))
 
@@ -63,8 +62,14 @@ class nmapScanner():
             list_tasks_nmap.append(list(ip))
         return list_tasks_nmap
 
-    def send_workers(self, poolsize: int, list_tasks_nmap: list):
-        """Run scanning in multiprocessing
+    def send_workers(self, poolsize: int, list_tasks_nmap: list) -> None:
+        """Run scans in multiprocessing
+
+        :param poolsize: Number of separate processes
+        :type poolsize: int
+
+        :list_tasks_nmap: Scan tasks divided into multiple arrays.
+        :type list_tasks_nmap: list
         """
         pool = Pool(poolsize)
         s = pool.map(self.make_job, list_tasks_nmap)
@@ -72,13 +77,13 @@ class nmapScanner():
         pool.close()
         pool.join()
 
-    def make_job(self, task_list: list):
+    def make_job(self, task_list: list) -> None:
         """Initialize scan from multiprocessing module
         """
         for element in task_list:
             self.scan(element)
 
-    def prepareTargets(self):
+    def prepareTargets(self) -> None:
         """Create list of IP addresses to scan from input IPs and subnets
         """
         for subnet in self.subnets_target:
@@ -91,24 +96,28 @@ class nmapScanner():
             self.ips_to_scan.append(ip)
     
 
-    def print_scan_info(self):
-        """Periodically print time elapsed since certain host scan start
+    def print_scan_info(self) -> None:
+        """Periodically print the time that has elapsed since the start of a specific host scan.
+        And kill nmap process if the scan is running too long.
         """
         while(True):
-            time.sleep(15)
-            for k, v in self.scans_status.items():
-                print("Host {0} is being scanned for {1} seconds. PID: {2}".format(v[1], int(time.time() - v[0]), k))
-                if int(time.time() - v[0]) > 20:
-                    print("Host {0} is being scanned too long:  {1} seconds.".format(v[1], int(time.time() - v[0]), ))
+            time.sleep(120)
+            scan_status_dict_copy = self.scans_status.copy() # to avoid race condition during iteration
+            for k, v in scan_status_dict_copy.items():
+                elapsed_time = int(time.time() - v[0])
+                if elapsed_time > self.MAX_SCAN_TIME:
+                    print("Host {0} is being scanned too long:  {1} seconds.".format(v[1], elapsed_time))
                     try:
                         print("Trying kill PID: {0}".format(k))
                         os.kill(k, signal.SIGTERM)
                         print("Scan process {0} killed".format(k))
+                        self.send_error_to_zabbix(v[1], "Scan_terminated_after_{0}_seconds".format(elapsed_time))
                     except:
                         print("Error during killing process")
                         traceback.print_exc()
+                print("Host {0} is being scanned for {1} seconds. PID: {2}".format(v[1], elapsed_time, k))
 
-    def scan(self, ip: str):
+    def scan(self, ip: str) -> None:
         """Execude nmap command with provided IP address
 
         :param ip: Single IP address appended to nmap command
@@ -119,17 +128,11 @@ class nmapScanner():
         status = None
         results = None
         try:
-            nmap_command = self.nmap_command_base + str(host)
             print('Starting scanning host: {0}'.format(host))
-            #nmap_output = subprocess.check_output(nmap_command, shell=True).decode('utf-8').rstrip()
-            #nmap_proc = subprocess.Popen(nmap_command, shell=True, stdin=None, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-            nmap_proc = subprocess.Popen(['nmap', '-sS', '-vv', '-Pn', '-T3', '-p-', '-oX', '-', str(host)], stdin=None, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            nmap_proc = subprocess.Popen(['nmap', '-sS', '-vv', '-T3', '-p-', '-oX', '-', str(host)], stdin=None, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
             pid = nmap_proc.pid
             self.scans_status[pid] = [time.time(), str(host)]
-            #scan_info = [nmap_proc.pid, time.time]
-            #for k, v in self.scans_status.items():
-            #    print(k, v)
-            nmap_output = nmap_proc.communicate()[0]
+            nmap_output = nmap_proc.communicate()[0].decode('utf-8').rstrip()
             print("{0} scanned".format(host))
             del self.scans_status[pid]
         except KeyboardInterrupt:
@@ -154,9 +157,13 @@ class nmapScanner():
         :return: Boolean indicating if scan was performed successfully and dict with ports states
         :rtype: Union[bool, dict]
         """
-        #print(nmap_output)
         parser_results = dict()
-        root = ET.fromstring(nmap_output)
+        root = None
+        try:
+            root = ET.fromstring(nmap_output)
+        except:
+            print("Nmap result is not a valid XML. Was task terminated? Aborting!")
+            return False, parser_results
         runstats = root.find('runstats')
         elapsed_time = runstats.find('finished').get('elapsed')
         print("{0} scanned in {1} seconds".format(host_addr, elapsed_time))
@@ -174,7 +181,7 @@ class nmapScanner():
         print(parser_results)
         return True, parser_results
 
-    def send_to_zabbix_server(self, parsed_results: dict):
+    def send_to_zabbix_server(self, parsed_results: dict) -> None:
         """Send ports info to the Zabbix server
         
         :param parsed_results: dict with ports states
@@ -200,8 +207,18 @@ class nmapScanner():
             print("Error during sending data")
         print(host_ip + " - " + ports_string)
 
+    def send_error_to_zabbix(self, host_name: str, message: str) -> None:
+        print("Sending error data to zabbix server")
+        try:
+            subprocess_command = 'zabbix_sender -v -z {0} -p {1} -s {2} -k {3} -o {4} --tls-connect psk --tls-psk-identity {5} --tls-psk-file {6}'.format(self.server_ip,
+            self.server_port, host_name, self.item_key_error, message, self.psk_identity, self.psk_file)
+            subprocess.call(subprocess_command, shell=True)
+        except:
+            print("Error during sending erro data")
+
 if __name__ == "__main__":
     nmapScanner = nmapScanner()
     start_time = time.time()
     nmapScanner.run()
-    print("Scan finieshed in {0}".format(time.time() - start_time))
+    print("Scan finished in {0}".format(time.time() - start_time))
+    sys.exit(0)
