@@ -13,21 +13,25 @@ import sys
 import time
 import threading
 import signal
+import configparser
+import re
 
 class nmapScanner():
+    config = None
     NUMBER_WORKERS = multiprocessing.cpu_count() * 2
-    MAX_SCAN_TIME = 3600 # in seconds
-    subnets_target = ['192.168.0.0/30']
-    ips_target = []
+    scan_finished = False
     ips_to_scan = []
     results = None
-    server_ip = '135.125.107.36'
-    server_port = '21055'
-    item_key = 'ports_item_key'
-    item_key_error = 'ports_item_key_error'
-    psk_identity = 'ports_psk_identity'
-    psk_file = 'ports_psk_identity'
-    scan_finished = False
+    # Values read from the config file
+    MAX_SCAN_TIME = 3600 # in seconds
+    subnets_target = []
+    ips_target = []
+    server_ip = None
+    server_port = None
+    item_key = None
+    item_key_error = None
+    psk_identity = None
+    psk_file = None
 
     def __init__(self) -> None:
         self.results = dict()
@@ -36,9 +40,76 @@ class nmapScanner():
             print("Script must be run as root!")
             sys.exit(1)
 
+    def importConfigFile(self):
+        """Read config file and validate values
+        """
+        self.config = configparser.ConfigParser()
+        try:
+            self.config.read('config.ini')
+        except:
+            print("Cannot read config file. QUITTING!")
+            sys.exit(2)
+        # SERVER block
+        try:
+            try:
+                self.server_ip = str(ipaddress.ip_address(self.config['SERVER']['server_ip']))
+            except:
+                print("Invalid server IP address. QUITTING!")
+                sys.exit(2)
+            if self.config['SERVER']['server_port'].isdigit():
+                self.server_port = self.config['SERVER']['server_port']
+            else:
+                print("Server port is not a digit. QUITTING!")
+                sys.exit(2)
+            if bool(re.match("^[A-Za-z0-9_]*$", self.config['SERVER']['item_key'])):
+                self.item_key = self.config['SERVER']['item_key']
+            else:
+                print("item_key can contain only alphanumeric and underscore char. QUITTING!")
+                sys.exit(2)
+            if bool(re.match("^[A-Za-z0-9_]*$", self.config['SERVER']['item_key_error'])):
+                self.item_key_error = self.config['SERVER']['item_key_error']
+            else:
+                print("item_key_error can contain only alphanumeric and underscore char. QUITTING!")
+                sys.exit(2)
+            if bool(re.match("^[A-Za-z0-9_]*$", self.config['SERVER']['psk_identity'])):
+                self.psk_identity = self.config['SERVER']['psk_identity']
+            else:
+                print("psk_identity can contain only alphanumeric and underscore char. QUITTING!")
+                sys.exit(2)
+            if bool(re.match("^[A-Za-z0-9_]*$", self.config['SERVER']['psk_file'])):
+                self.psk_file = self.config['SERVER']['psk_file']
+            else:
+                print("psk_file can contain only alphanumeric and underscore char. QUITTING!")
+                sys.exit(2)
+        except:
+            traceback.print_exc()
+        # SCAN_OPTIONS block
+        try:
+            subnets = self.config['SCAN_OPTIONS']['subnets_target'].split(',')
+            subnets = [x.strip(' ') for x in subnets]
+            self.subnets_target = subnets
+        except:
+            print("Cannot parse input subnets targets")
+            traceback.print_exc()
+            sys.exit(2)
+        try:
+            ips = self.config['SCAN_OPTIONS']['ips_target'].split(',')
+            ips = [x.strip(' ') for x in ips]
+            self.ips_target = ips
+        except:
+            print("Cannot parse input ip targets")
+            traceback.print_exc()
+            sys.exit(2)
+        if self.config['SCAN_OPTIONS']['MAX_SCAN_TIME'].isdigit():
+            self.MAX_SCAN_TIME = self.config['SCAN_OPTIONS']['MAX_SCAN_TIME']
+        else:
+            print("MAX_SCAN_TIME is not a digit. Using default value.")
+
+
     def run(self) -> None:
         """Start monitoring thread and multiprocessing scan.
         """
+        self.importConfigFile()
         self.prepareTargets()
         monitor_thread = threading.Thread(target=self.print_scan_info)
         monitor_thread.start()
@@ -200,23 +271,23 @@ class nmapScanner():
                 ports_string += p_string
             ports_string = ports_string[:-1]
         host_name = str(host_ip)
-        print("Sending data to zabbix server")
+        print("{0} - Sending data to zabbix server".format(host_name))
         try:
             subprocess_command = 'zabbix_sender -v -z {0} -p {1} -s {2} -k {3} -o {4} --tls-connect psk --tls-psk-identity {5} --tls-psk-file {6}'.format(self.server_ip,
             self.server_port, host_name, self.item_key, ports_string, self.psk_identity, self.psk_file)
             subprocess.call(subprocess_command, shell=True)
         except:
-            print("Error during sending data")
+            print("{0} - Error during sending data".format(host_name))
         print(host_ip + " - " + ports_string)
 
     def send_error_to_zabbix(self, host_name: str, message: str) -> None:
-        print("Sending error data to zabbix server")
+        print("{0} - Sending error data to zabbix server".format(host_name))
         try:
-            subprocess_command = 'zabbix_sender -v -z {0} -p {1} -s {2} -k {3} -o {4} --tls-connect psk --tls-psk-identity {5} --tls-psk-file {6}'.format(self.server_ip,
+            subprocess_command = 'zabbix_sender -vv -z {0} -p {1} -s {2} -k {3} -o {4} --tls-connect psk --tls-psk-identity {5} --tls-psk-file {6}'.format(self.server_ip,
             self.server_port, host_name, self.item_key_error, message, self.psk_identity, self.psk_file)
             subprocess.call(subprocess_command, shell=True)
         except:
-            print("Error during sending error data")
+            print("{0} - Error during sending error data".format(host_name))
 
 if __name__ == "__main__":
     nmapScanner = nmapScanner()
