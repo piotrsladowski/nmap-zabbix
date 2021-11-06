@@ -111,15 +111,20 @@ class nmapScanner():
         # SCAN_OPTIONS block
         try:
             subnets = self.config['SCAN_OPTIONS']['subnets_target'].split(',')
+            if ('[' or ']') in self.config['SCAN_OPTIONS']['subnets_target']:
+                logging.critical('Incorrect subnets in config file. Do not use brackets!')
+                sys.exit(2)
             subnets = [x.strip(' ') for x in subnets]
             self.subnets_target = subnets
         except:
-            #print('Cannot parse input subnets targets')
             logging.critical('Cannot parse input subnets targets')
             traceback.print_exc()
             sys.exit(2)
         try:
             ips = self.config['SCAN_OPTIONS']['ips_target'].split(',')
+            if ('[' or ']') in self.config['SCAN_OPTIONS']['ips_target']:
+                logging.critical('Incorrect IPs in config file. Do not use brackets!')
+                sys.exit(2)
             ips = [x.strip(' ') for x in ips]
             self.ips_target = ips
         except:
@@ -130,7 +135,6 @@ class nmapScanner():
         if self.config['SCAN_OPTIONS']['MAX_SCAN_TIME'].isdigit():
             self.MAX_SCAN_TIME = self.config['SCAN_OPTIONS']['MAX_SCAN_TIME']
         else:
-            #print('MAX_SCAN_TIME is not a digit. Using default value.')
             logging.warning('MAX_SCAN_TIME is not a digit. Using default value.')
 
 
@@ -193,8 +197,10 @@ class nmapScanner():
             elif (type(hosts_subnet) == ipaddress.IPv4Address):
                 self.ips_to_scan.append(str(hosts_subnet))
         for ip in self.ips_target:
-            self.ips_to_scan.append(ip)
-    
+            if ip not in self.ips_to_scan:
+                self.ips_to_scan.append(ip)
+        print(self.ips_to_scan)
+        sys.exit(1)
 
     def print_scan_info(self) -> None:
         """Periodically print the time that has elapsed since the start of a specific host scan.
