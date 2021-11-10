@@ -126,14 +126,14 @@ class nmapScanner():
                 logging.critical('Incorrect IPs in config file. Do not use brackets!')
                 sys.exit(2)
             ips = [x.strip(' ') for x in ips]
-            self.ips_target = ips
+            if len(ips[0]) > 0:
+                self.ips_target = ips
         except:
-            #print('Cannot parse input ip targets')
             logging.critical('Cannot parse input ip targets')
             traceback.print_exc()
             sys.exit(2)
         if self.config['SCAN_OPTIONS']['MAX_SCAN_TIME'].isdigit():
-            self.MAX_SCAN_TIME = self.config['SCAN_OPTIONS']['MAX_SCAN_TIME']
+            self.MAX_SCAN_TIME = int(self.config['SCAN_OPTIONS']['MAX_SCAN_TIME'])
         else:
             logging.warning('MAX_SCAN_TIME is not a digit. Using default value.')
 
@@ -191,6 +191,8 @@ class nmapScanner():
         """Create list of IP addresses to scan from input IPs and subnets
         """
         for subnet in self.subnets_target:
+            if len(subnet) == 0:
+                continue
             hosts_subnet = list(ipaddress.IPv4Network(subnet).hosts())
             if (type(hosts_subnet) == list):
                 self.ips_to_scan.extend(map(str,hosts_subnet))
@@ -199,8 +201,6 @@ class nmapScanner():
         for ip in self.ips_target:
             if ip not in self.ips_to_scan:
                 self.ips_to_scan.append(ip)
-        print(self.ips_to_scan)
-        sys.exit(1)
 
     def print_scan_info(self) -> None:
         """Periodically print the time that has elapsed since the start of a specific host scan.
@@ -240,12 +240,12 @@ class nmapScanner():
         try:
             logging.info('{0} - Starting scanning host'.format(host))
             print('{0} - Starting scanning host'.format(host))
-            nmap_proc = subprocess.Popen(['nmap', '-sS', '-vv', '-T3', '-p-', '-oX', '-', str(host)], stdin=None, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            #nmap_proc = subprocess.Popen(['nmap', '-sS', '-sU', '-vv', '-T3', '-p-', '-oX', '-', str(host)], stdin=None, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            nmap_proc = subprocess.Popen(['nmap', '-sSU', '-Pn', '-vv', '-T3', '--servicedb', 'custom_ports.txt', '--top-ports', '25000', '-oX', '-', str(host)], stdin=None, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
             pid = nmap_proc.pid
             self.scans_status[pid] = [time.time(), str(host)]
             nmap_output = nmap_proc.communicate()[0].decode('utf-8').rstrip()
             logging.info('{0} - Scan ended'.format(host))
-            #print("{0} scanned".format(host))
         except KeyboardInterrupt:
             logging.info('{0} - Quitting scan!'.format(host))
             return
@@ -289,7 +289,8 @@ class nmapScanner():
         ports_results = []
         if ports is not None:
             for port in ports.iter('port'):
-                ports_results.append({port.get('portid') : port[0].get('state')})
+                port_id_proto = '{0}-{1}'.format(port.get('portid'), port.get('protocol'))
+                ports_results.append({port_id_proto : port[0].get('state')})
         parser_results['Ports'] = ports_results
         logging.debug('{0} - {1}'.format(host_addr, parser_results))
         return True, parser_results
@@ -314,7 +315,7 @@ class nmapScanner():
         while int(time.time()) - self.last_zabbix_trap < 5:
             time.sleep(random.randint(6,12))
         logging.info("{0} - Sending data to zabbix server".format(host_name))
-        subprocess_command = 'zabbix_sender -vv -z {0} -p {1} -s {2} -k {3} -o {4} --tls-connect psk --tls-psk-identity {5} --tls-psk-file {6}'.format(self.server_ip,
+        subprocess_command = 'zabbix_sender -vv -z {0} -p {1} -s {2} -k {3} -o "{4}" --tls-connect psk --tls-psk-identity {5} --tls-psk-file {6}'.format(self.server_ip,
         self.server_port, host_name, self.item_key, ports_string, self.psk_identity, self.psk_file)
         try:
             self.last_zabbix_trap = int(time.time())
@@ -325,12 +326,11 @@ class nmapScanner():
             logging.error("{0} - Zabbix_sender status : FAIL. Return code: {1}\nOutput:\n{2}".format(host_name, exc.returncode, exc.output))
         else:
             logging.info('{0} - Data sent successfully'.format(host_name))
-            #print("Output: \n{}\n".format(response))
 
     def send_error_to_zabbix(self, host_name: str, message: str) -> None:
         print("{0} - Sending error data to zabbix server".format(host_name))
         try:
-            subprocess_command = 'zabbix_sender -vv -z {0} -p {1} -s {2} -k {3} -o {4} --tls-connect psk --tls-psk-identity {5} --tls-psk-file {6}'.format(self.server_ip,
+            subprocess_command = 'zabbix_sender -vv -z {0} -p {1} -s {2} -k {3} -o "{4}" --tls-connect psk --tls-psk-identity {5} --tls-psk-file {6}'.format(self.server_ip,
             self.server_port, host_name, self.item_key_error, message, self.psk_identity, self.psk_file)
             subprocess.call(subprocess_command, shell=True)
         except:
